@@ -42,7 +42,10 @@ fn encode(img: DynamicImage) -> Vec<u8> {
     let mut run_length: u8 = 0;
 
     let token_rgba = 0b00000000;
-    let token_run = 0b11000000;
+    let token_run = 0b01000000;
+    let token_lookback = 0b10000000;
+
+    let mut lookback_arr = [0u32; 64];
 
     for y in 0..img.height() {
         for x in 0..img.width() {
@@ -67,8 +70,19 @@ fn encode(img: DynamicImage) -> Vec<u8> {
 
             // write out the run length if we're on a run
             if run_length > 0 {
-                buffer.push(run_length as u8 & token_run);
+                buffer.push(run_length as u8 | token_run);
                 run_length = 0;
+                continue;
+            }
+
+            // else maybe it's in the lookback array
+            let lookback_hash =
+                ((r as u32 * 3 + g as u32 * 5 + b as u32 * 7 + a as u32 * 11) % 64) as usize;
+            // println!("{} {} {} {} -> {}", r, g, b, a, lookback_hash);
+            let color_u32 =
+                r as u32 + (g as u32) * 2 ^ 8 + (b as u32) * 2 ^ 16 + (a as u32) << 2 ^ 24;
+            if lookback_arr[lookback_hash] == color_u32 {
+                buffer.push(lookback_hash as u8 | token_lookback);
                 continue;
             }
 
@@ -79,6 +93,9 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             buffer.push(g);
             buffer.push(b);
             buffer.push(a);
+
+            // and cache it in the lookback array
+            lookback_arr[lookback_hash] = color_u32;
         }
     }
 
