@@ -1,7 +1,9 @@
-use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer};
+use std::{fs::File, io::Write};
+
+use image::{DynamicImage, GenericImage, GenericImageView};
 
 fn main() {
-    println!("Let's make a png atlas!");
+    println!("BIP");
 
     run_on_image("tests/selene_neutral_0.png");
 }
@@ -29,6 +31,8 @@ fn run_on_image(path: &str) {
         bip.len(),
         100.0 * bip.len() as f32 / raw_size_bytes as f32
     );
+    let mut file = File::create("tests/selene_neutral_0.bip").unwrap();
+    file.write(&bip).unwrap();
 
     let decoded = decode(bip);
     decoded.save("tests/selene_neutral_0_decoded.png").unwrap();
@@ -37,7 +41,11 @@ fn run_on_image(path: &str) {
 const TOKEN_RGBA: u8 = 0b00000000;
 const TOKEN_RUN: u8 = 0b01000000;
 const TOKEN_LOOKBACK: u8 = 0b10000000;
-const MASK: u8 = 0b11000000;
+const MASK: u8 = 0b00111111;
+
+fn color_hash(r: u8, g: u8, b: u8, a: u8) -> usize {
+    ((r as u32 * 3 + g as u32 * 5 + b as u32 * 7 + a as u32 * 11) % 64) as usize
+}
 
 fn encode(img: DynamicImage) -> Vec<u8> {
     let mut buffer = Vec::new();
@@ -72,6 +80,8 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             if is_same && run_length < 63 {
                 run_length += 1;
                 continue;
+
+                // if we reach the last pixel on a run, the decoder will implicitly run to the end of the image
             }
 
             // else, we have a new pixel
@@ -80,18 +90,21 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             if run_length > 0 {
                 buffer.push(run_length | TOKEN_RUN);
                 run_length = 0;
+
+                if is_same {
+                    run_length += 1;
+                    continue;
+                }
             }
 
             // maybe it's in the lookback array
-            let lookback_hash =
-                ((r as u32 * 3 + g as u32 * 5 + b as u32 * 7 + a as u32 * 11) % 64) as usize;
-            // println!("{} {} {} {} -> {}", r, g, b, a, lookback_hash);
-            let color_u32 =
-                r as u32 + (g as u32) * 2 ^ 8 + (b as u32) * 2 ^ 16 + (a as u32) << 2 ^ 24;
-            if lookback_arr[lookback_hash] == color_u32 {
-                buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
-                continue;
-            }
+            // let lookback_hash = color_hash(r, g, b, a);
+            // let color_u32 =
+            //     r as u32 + (g as u32) * 2 ^ 8 + (b as u32) * 2 ^ 16 + (a as u32) << 2 ^ 24;
+            // if lookback_arr[lookback_hash] == color_u32 {
+            //     buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
+            //     continue;
+            // }
 
             // else, just write the pixel out
             buffer.push(TOKEN_RGBA);
@@ -101,7 +114,7 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             buffer.push(a);
 
             // and cache it in the lookback array
-            lookback_arr[lookback_hash] = color_u32;
+            // lookback_arr[lookback_hash] = color_u32;
         }
     }
 
@@ -114,10 +127,19 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
     let h = buf[1] as u32;
     let mut img = DynamicImage::new_rgba8(w, h);
 
-    let mut last_r = 0;
-    let mut last_g = 0;
-    let mut last_b = 0;
-    let mut last_a = 0;
+    let mut r = 0;
+    let mut g = 0;
+    let mut b = 0;
+    let mut a = 0;
+
+    let mut lookback_arr = [0u32; 64];
+
+    // helper fn to draw if in bounds
+    let mut draw = |x: u32, y: u32, r: u8, g: u8, b: u8, a: u8| {
+        if img.in_bounds(x, y) {
+            img.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+    };
 
     // for each byte starting at 2
     let mut pixel_idx = 0;
@@ -126,36 +148,46 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
         let token = buf[buff_idx];
         buff_idx += 1;
 
-        if token & TOKEN_RUN != 0 {
-            let run_length = buf[buff_idx] & !MASK;
-            println!("{}", run_length);
+        if (token & TOKEN_RUN) != 0 {
+            let run_length = token & MASK;
             for _ in 0..run_length {
-                let x = pixel_idx % w as usize;
-                let y = pixel_idx / w as usize;
-                // pixel_idx += 1;
-                img.put_pixel(
-                    x as u32,
-                    y as u32,
-                    image::Rgba([last_r, last_g, last_b, last_a]),
-                );
+                let x = pixel_idx % w;
+                let y = pixel_idx / w;
+                pixel_idx += 1;
+                draw(x, y, r, g, b, a);
             }
-            continue;
-        } else if token == TOKEN_RGBA {
-            last_r = buf[buff_idx + 1];
-            last_g = buf[buff_idx + 2];
-            last_b = buf[buff_idx + 3];
-            last_a = buf[buff_idx + 4];
-            buff_idx += 5;
+        } else if token & TOKEN_LOOKBACK != 0 {
+            let lookback_hash = token & MASK;
+            let color_u32 = lookback_arr[lookback_hash as usize];
+            r = (color_u32 & 0xFF) as u8;
+            g = ((color_u32 >> 8) & 0xFF) as u8;
+            b = ((color_u32 >> 16) & 0xFF) as u8;
+            a = ((color_u32 >> 24) & 0xFF) as u8;
 
-            let x = pixel_idx % w as usize;
-            let y = pixel_idx / w as usize;
+            let x = pixel_idx % w;
+            let y = pixel_idx / w;
             pixel_idx += 1;
-            img.put_pixel(
-                x as u32,
-                y as u32,
-                image::Rgba([last_r, last_g, last_b, last_a]),
-            );
+            draw(x, y, r, g, b, 255);
+        } else if token == TOKEN_RGBA {
+            r = buf[buff_idx + 0];
+            g = buf[buff_idx + 1];
+            b = buf[buff_idx + 2];
+            a = buf[buff_idx + 3];
+            buff_idx += 4;
+
+            let x = pixel_idx % w;
+            let y = pixel_idx / w;
+            pixel_idx += 1;
+            draw(x, y, r, g, b, a);
+        } else {
+            panic!("invalid token");
         }
+
+        let lookback_hash = color_hash(r, g, b, a);
+        lookback_arr[lookback_hash] = r as u32
+            + (g as u32) * (2 ^ 8)
+            + (b as u32) * (2 ^ 16)
+            + (a as u32) * (2 ^ 24);
     }
 
     img
