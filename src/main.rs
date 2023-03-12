@@ -84,27 +84,27 @@ fn encode(img: DynamicImage) -> Vec<u8> {
                 // if we reach the last pixel on a run, the decoder will implicitly run to the end of the image
             }
 
-            // else, we have a new pixel
-
             // write out the run length if we're on a run, then continue with the new pixel
             if run_length > 0 {
                 buffer.push(run_length | TOKEN_RUN);
                 run_length = 0;
 
                 if is_same {
+                    // immediatelly start the next run here if it's continuing
                     run_length += 1;
                     continue;
                 }
             }
 
+            // else, we have a new pixel
+
             // maybe it's in the lookback array
-            // let lookback_hash = color_hash(r, g, b, a);
-            // let color_u32 =
-            //     r as u32 + (g as u32) * 2 ^ 8 + (b as u32) * 2 ^ 16 + (a as u32) << 2 ^ 24;
-            // if lookback_arr[lookback_hash] == color_u32 {
-            //     buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
-            //     continue;
-            // }
+            let lookback_hash = color_hash(r, g, b, a);
+            let color_u32 = pack_rgba(r, g, b, a);
+            if lookback_arr[lookback_hash] == color_u32 {
+                buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
+                continue;
+            }
 
             // else, just write the pixel out
             buffer.push(TOKEN_RGBA);
@@ -114,11 +114,15 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             buffer.push(a);
 
             // and cache it in the lookback array
-            // lookback_arr[lookback_hash] = color_u32;
+            lookback_arr[lookback_hash] = color_u32;
         }
     }
 
     buffer
+}
+
+fn pack_rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (r as u32) << 24 | (g as u32) << 16 | (b as u32) << 8 | (a as u32)
 }
 
 pub fn decode(buf: Vec<u8>) -> DynamicImage {
@@ -134,40 +138,38 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
 
     let mut lookback_arr = [0u32; 64];
 
+    // for each byte starting at 2
+    let mut pixel_idx = 0;
+    let mut buff_idx = 2;
+
     // helper fn to draw if in bounds
-    let mut draw = |x: u32, y: u32, r: u8, g: u8, b: u8, a: u8| {
+    let mut draw = |r: u8, g: u8, b: u8, a: u8| {
+        let x = pixel_idx % w;
+        let y = pixel_idx / w;
+        pixel_idx += 1;
         if img.in_bounds(x, y) {
             img.put_pixel(x, y, image::Rgba([r, g, b, a]));
         }
     };
 
-    // for each byte starting at 2
-    let mut pixel_idx = 0;
-    let mut buff_idx = 2;
     while buff_idx < buf.len() {
         let token = buf[buff_idx];
         buff_idx += 1;
 
-        if (token & TOKEN_RUN) != 0 {
+        if token & !MASK == TOKEN_RUN {
             let run_length = token & MASK;
             for _ in 0..run_length {
-                let x = pixel_idx % w;
-                let y = pixel_idx / w;
-                pixel_idx += 1;
-                draw(x, y, r, g, b, a);
+                draw(r, g, b, a);
             }
-        } else if token & TOKEN_LOOKBACK != 0 {
+        } else if token & !MASK == TOKEN_LOOKBACK {
             let lookback_hash = token & MASK;
             let color_u32 = lookback_arr[lookback_hash as usize];
-            r = (color_u32 & 0xFF) as u8;
-            g = ((color_u32 >> 8) & 0xFF) as u8;
-            b = ((color_u32 >> 16) & 0xFF) as u8;
-            a = ((color_u32 >> 24) & 0xFF) as u8;
+            a = (color_u32 & 0xFF) as u8;
+            b = ((color_u32 >> 8) & 0xFF) as u8;
+            g = ((color_u32 >> 16) & 0xFF) as u8;
+            r = ((color_u32 >> 24) & 0xFF) as u8;
 
-            let x = pixel_idx % w;
-            let y = pixel_idx / w;
-            pixel_idx += 1;
-            draw(x, y, r, g, b, 255);
+            draw(r, g, b, a);
         } else if token == TOKEN_RGBA {
             r = buf[buff_idx + 0];
             g = buf[buff_idx + 1];
@@ -175,19 +177,13 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
             a = buf[buff_idx + 3];
             buff_idx += 4;
 
-            let x = pixel_idx % w;
-            let y = pixel_idx / w;
-            pixel_idx += 1;
-            draw(x, y, r, g, b, a);
+            draw(r, g, b, a);
         } else {
             panic!("invalid token");
         }
 
         let lookback_hash = color_hash(r, g, b, a);
-        lookback_arr[lookback_hash] = r as u32
-            + (g as u32) * (2 ^ 8)
-            + (b as u32) * (2 ^ 16)
-            + (a as u32) * (2 ^ 24);
+        lookback_arr[lookback_hash] = pack_rgba(r, g, b, a);
     }
 
     img
