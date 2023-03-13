@@ -1,4 +1,5 @@
 /target
 atlas.png
-/tests/*decoded.png
+/tests/*.decoded.png
+/tests/*.gz
 /tests/*.bip

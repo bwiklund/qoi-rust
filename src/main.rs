@@ -5,7 +5,9 @@ use image::{DynamicImage, GenericImage, GenericImageView};
 fn main() {
     println!("BIP");
 
+    run_on_image("tests/atlas.png");
     run_on_image("tests/selene_neutral_0.png");
+    run_on_image("tests/pinch_atlas32.png");
 }
 
 fn run_on_image(path: &str) {
@@ -31,11 +33,11 @@ fn run_on_image(path: &str) {
         bip.len(),
         100.0 * bip.len() as f32 / raw_size_bytes as f32
     );
-    let mut file = File::create("tests/selene_neutral_0.bip").unwrap();
+    let mut file = File::create(path.to_owned() + ".bip").unwrap();
     file.write(&bip).unwrap();
 
     let decoded = decode(bip);
-    decoded.save("tests/selene_neutral_0_decoded.png").unwrap();
+    decoded.save(path.to_owned() + ".decoded.png").unwrap();
 }
 
 const TOKEN_RGBA: u8 = 0b00000000;
@@ -48,11 +50,11 @@ fn color_hash(r: u8, g: u8, b: u8, a: u8) -> usize {
 }
 
 fn encode(img: DynamicImage) -> Vec<u8> {
-    let mut buffer = Vec::new();
+    let mut buffer: Vec<u8> = Vec::new();
 
-    // TODO use 2 bytes each for width and height
-    buffer.push(img.width() as u8);
-    buffer.push(img.height() as u8);
+    // push a u16 to u8 buffer as two bytes
+    buffer.extend_from_slice(&(img.width() as u16).to_le_bytes());
+    buffer.extend_from_slice(&(img.height() as u16).to_le_bytes());
 
     let mut last_r: u8 = 0;
     let mut last_g: u8 = 0;
@@ -127,8 +129,8 @@ fn pack_rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
 
 pub fn decode(buf: Vec<u8>) -> DynamicImage {
     // for each byte,
-    let w = buf[0] as u32;
-    let h = buf[1] as u32;
+    let w = u16::from_le_bytes([buf[0], buf[1]]) as u32;
+    let h = u16::from_le_bytes([buf[2], buf[3]]) as u32;
     let mut img = DynamicImage::new_rgba8(w, h);
 
     let mut r = 0;
@@ -140,7 +142,7 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
 
     // for each byte starting at 2
     let mut pixel_idx = 0;
-    let mut buff_idx = 2;
+    let mut buff_idx = 4;
 
     // helper fn to draw if in bounds
     let mut draw = |r: u8, g: u8, b: u8, a: u8| {
