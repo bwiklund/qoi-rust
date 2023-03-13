@@ -130,7 +130,7 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
             if lookback_arr[lookback_hash] == color_u32 {
                 buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
             } else if a != last_a {
-                // if the alpha changed we send an entire rgba
+                // if the alpha changed we send an entire rgba no matter what
                 buffer.push(TOKEN_RGBA);
                 buffer.push(r);
                 buffer.push(g);
@@ -148,18 +148,18 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
                 let packed_diff =
                     ((diff_r + 2) as u8) << 4 | ((diff_g + 2) as u8) << 2 | ((diff_b + 2) as u8);
                 buffer.push(TOKEN_DIFF_RGB | packed_diff);
-            // } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
-            //     && (diff_g >= -32
-            //         && diff_g < 32
-            //         && diff_r >= -8
-            //         && diff_r < 8
-            //         && diff_b >= -8
-            //         && diff_b < 8)
-            // {
-            //     buffer.push(TOKEN_DIFF_LUMA | (((diff_g + 32) & 0b00111111) as u8));
-            //     buffer.push(((diff_r + 8) as u8) << 2 | ((diff_b + 8) as u8));
+            } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
+                && (diff_g >= -32
+                    && diff_g < 32
+                    && diff_r >= -8
+                    && diff_r < 8
+                    && diff_b >= -8
+                    && diff_b < 8)
+            {
+                buffer.push(TOKEN_DIFF_LUMA | (((diff_g + 32) & 0b00111111) as u8));
+                buffer.push(((diff_r + 8) as u8) << 4 | ((diff_b + 8) as u8));
             } else {
-                // else, send a full rgb with unchanged alpha
+                // else diff is too big for either diff chunk. send a full rgb with unchanged alpha
                 buffer.push(TOKEN_RGB);
                 buffer.push(r);
                 buffer.push(g);
@@ -249,9 +249,9 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
             pixel_idx += 1;
         } else if token & !MASK == TOKEN_DIFF_RGB {
             let diff = token & MASK;
-            let diff_r = ((diff >> 4) & 0b11) as i8 - 2;
-            let diff_g = ((diff >> 2) & 0b11) as i8 - 2;
-            let diff_b = (diff & 0b11) as i8 - 2;
+            let diff_r = ((diff >> 4) & 0b11) as i16 - 2;
+            let diff_g = ((diff >> 2) & 0b11) as i16 - 2;
+            let diff_b = (diff & 0b11) as i16 - 2;
 
             r = (r as i16 + diff_r as i16) as u8;
             g = (g as i16 + diff_g as i16) as u8;
@@ -262,17 +262,19 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
             pixel_idx += 1;
         } else if token & !MASK == TOKEN_DIFF_LUMA {
             let diff_p1 = token & MASK;
-            let diff_g = diff_p1 & 0b00111111;
+            let diff_g = (diff_p1 & 0b00111111) as i16 - 32;
 
-            let diff_p2 = buf[buff_idx + 1];
+            let diff_p2 = buf[buff_idx];
             buff_idx += 1;
 
-            let diff_r = ((diff_p2 >> 4) & 0b00001111) as i8 - 8;
-            let diff_b = (diff_p2 & 0b00001111) as i8 - 8;
+            let diff_r = ((diff_p2 >> 4) & 0b00001111) as i16 - 8;
+            let diff_b = (diff_p2 & 0b00001111) as i16 - 8;
+            // println!("{:b} {:b}", diff_p1, diff_p2);
+            // println!("diff_r: {}, diff_g: {}, diff_b: {}", diff_r, diff_g, diff_b);
 
-            r = (r as i16 + diff_r as i16) as u8;
-            g = (g as i16 + diff_g as i16) as u8;
-            b = (b as i16 + diff_b as i16) as u8;
+            r = (r as i16 + diff_r) as u8;
+            g = (g as i16 + diff_g) as u8;
+            b = (b as i16 + diff_b) as u8;
             // a is unchanged
 
             draw(pixel_idx, r, g, b, a);
