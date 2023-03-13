@@ -151,13 +151,13 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
             } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
                 && (diff_g >= -32
                     && diff_g < 32
-                    && diff_r >= -8
-                    && diff_r < 8
-                    && diff_b >= -8
-                    && diff_b < 8)
+                    && (diff_r - diff_g) >= -8
+                    && (diff_r - diff_g) < 8
+                    && (diff_b - diff_g) >= -8
+                    && (diff_b - diff_g) < 8)
             {
                 buffer.push(TOKEN_DIFF_LUMA | (((diff_g + 32) & 0b00111111) as u8));
-                buffer.push(((diff_r + 8) as u8) << 4 | ((diff_b + 8) as u8));
+                buffer.push((((diff_r - diff_g) + 8) as u8) << 4 | (((diff_b - diff_g) + 8) as u8));
             } else {
                 // else diff is too big for either diff chunk. send a full rgb with unchanged alpha
                 buffer.push(TOKEN_RGB);
@@ -272,9 +272,9 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
             // println!("{:b} {:b}", diff_p1, diff_p2);
             // println!("diff_r: {}, diff_g: {}, diff_b: {}", diff_r, diff_g, diff_b);
 
-            r = (r as i16 + diff_r) as u8;
+            r = (r as i16 + diff_r + diff_g) as u8;
             g = (g as i16 + diff_g) as u8;
-            b = (b as i16 + diff_b) as u8;
+            b = (b as i16 + diff_b + diff_g) as u8;
             // a is unchanged
 
             draw(pixel_idx, r, g, b, a);
