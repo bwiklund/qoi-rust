@@ -26,7 +26,7 @@ fn run_on_image(path: &str) {
         100.0 * size as f32 / raw_size_bytes as f32
     );
 
-    let bip = encode(img);
+    let bip = encode(&img);
     println!(
         "{} as bip -> {} bytes ({}%)",
         path,
@@ -36,10 +36,28 @@ fn run_on_image(path: &str) {
     let mut file = File::create(path.to_owned() + ".bip").unwrap();
     file.write(&bip).unwrap();
 
-    let decoded = decode(bip);
+    let decoded = decode(&bip);
     decoded.save(path.to_owned() + ".decoded.png").unwrap();
+
+    check(&img, &decoded);
 }
 
+fn check(a: &DynamicImage, b: &DynamicImage) {
+    // comparing as_bytes wasn't reliable, because of alpha channel missing on opaque images i think?
+    for y in 0..a.height() {
+        for x in 0..a.width() {
+            let a_pixel = a.get_pixel(x, y);
+            let b_pixel = b.get_pixel(x, y);
+
+            if a_pixel != b_pixel {
+                println!(">>> !!!! pixel mismatch at {}, {}", x, y);
+                return;
+            }
+        }
+    }
+}
+
+const TOKEN_RGB: u8 = 0b00000001;
 const TOKEN_RGBA: u8 = 0b00000000;
 const TOKEN_RUN: u8 = 0b01000000;
 const TOKEN_LOOKBACK: u8 = 0b10000000;
@@ -49,7 +67,7 @@ fn color_hash(r: u8, g: u8, b: u8, a: u8) -> usize {
     ((r as u32 * 3 + g as u32 * 5 + b as u32 * 7 + a as u32 * 11) % 64) as usize
 }
 
-fn encode(img: DynamicImage) -> Vec<u8> {
+fn encode(img: &DynamicImage) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
 
     // push a u16 to u8 buffer as two bytes
@@ -74,10 +92,6 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             let a = pixel[3];
 
             let is_same = r == last_r && g == last_g && b == last_b && a == last_a;
-            last_r = r;
-            last_g = g;
-            last_b = b;
-            last_a = a;
 
             if is_same && run_length < 63 {
                 run_length += 1;
@@ -105,18 +119,30 @@ fn encode(img: DynamicImage) -> Vec<u8> {
             let color_u32 = pack_rgba(r, g, b, a);
             if lookback_arr[lookback_hash] == color_u32 {
                 buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
-                continue;
-            }
+            } else {
+                // else, just write the pixel out. skip alpha if unchanged
 
-            // else, just write the pixel out
-            buffer.push(TOKEN_RGBA);
-            buffer.push(r);
-            buffer.push(g);
-            buffer.push(b);
-            buffer.push(a);
+                if a != last_a {
+                    buffer.push(TOKEN_RGBA);
+                    buffer.push(r);
+                    buffer.push(g);
+                    buffer.push(b);
+                    buffer.push(a);
+                } else {
+                    buffer.push(TOKEN_RGB);
+                    buffer.push(r);
+                    buffer.push(g);
+                    buffer.push(b);
+                }
+            }
 
             // and cache it in the lookback array
             lookback_arr[lookback_hash] = color_u32;
+
+            last_r = r;
+            last_g = g;
+            last_b = b;
+            last_a = a;
         }
     }
 
@@ -127,7 +153,7 @@ fn pack_rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
     (r as u32) << 24 | (g as u32) << 16 | (b as u32) << 8 | (a as u32)
 }
 
-pub fn decode(buf: Vec<u8>) -> DynamicImage {
+pub fn decode(buf: &Vec<u8>) -> DynamicImage {
     // for each byte,
     let w = u16::from_le_bytes([buf[0], buf[1]]) as u32;
     let h = u16::from_le_bytes([buf[2], buf[3]]) as u32;
@@ -178,6 +204,14 @@ pub fn decode(buf: Vec<u8>) -> DynamicImage {
             b = buf[buff_idx + 2];
             a = buf[buff_idx + 3];
             buff_idx += 4;
+
+            draw(r, g, b, a);
+        } else if token == TOKEN_RGB {
+            r = buf[buff_idx + 0];
+            g = buf[buff_idx + 1];
+            b = buf[buff_idx + 2];
+            // a is unchanged
+            buff_idx += 3;
 
             draw(r, g, b, a);
         } else {
