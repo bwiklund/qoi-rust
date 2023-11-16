@@ -77,9 +77,12 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
 
     buffer.extend_from_slice("qoif".as_bytes());
 
+    let w = img.width();
+    let h = img.height();
+
     // push a u16 to u8 buffer as two bytes
-    buffer.extend_from_slice(&(img.width() as u32).to_be_bytes());
-    buffer.extend_from_slice(&(img.height() as u32).to_be_bytes());
+    buffer.extend_from_slice(&w.to_be_bytes());
+    buffer.extend_from_slice(&h.to_be_bytes());
 
     buffer.push(4); // rgba channels
     buffer.push(0); // srgb space, default
@@ -93,8 +96,8 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
 
     let mut lookback_arr = [0u32; 64];
 
-    for y in 0..img.height() {
-        for x in 0..img.width() {
+    for y in 0..h {
+        for x in 0..w {
             let pixel = img.get_pixel(x, y); // todo: might not be the fastest way to get at the bytes
             let r = pixel[0];
             let g = pixel[1];
@@ -106,70 +109,61 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
             let diff_b = b as i16 - last_b as i16;
             // let diff_a = r as i16 - last_a as i16;
 
-            let is_same = r == last_r && g == last_g && b == last_b && a == last_a;
-
-            if is_same && run_length < 62 {
-                // 64 - 2 = 62 is the max, otherwise would be ambiguous with TOKEN_RGB(A)
-                run_length += 1;
-                continue;
-
-                // if we reach the last pixel on a run, the decoder will implicitly run to the end of the image
-            }
-
-            // write out the run length if we're on a run, then continue with the new pixel
-            if run_length > 0 {
-                buffer.push((run_length - 1) | TOKEN_RUN);
-                run_length = 0;
-
-                if is_same {
-                    // immediatelly start the next run here if it's continuing
-                    run_length += 1;
-                    continue;
-                }
-            }
-
-            // else, we have a new pixel
-
-            // maybe it's in the lookback array
             let lookback_hash = color_hash(r, g, b, a);
             let color_u32 = pack_rgba(r, g, b, a);
-            if lookback_arr[lookback_hash] == color_u32 {
-                buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
-            } else if a != last_a {
-                // if the alpha changed we send an entire rgba no matter what
-                buffer.push(TOKEN_RGBA);
-                buffer.push(r);
-                buffer.push(g);
-                buffer.push(b);
-                buffer.push(a);
-            } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
-                && (diff_r >= -2
-                    && diff_r < 2
-                    && diff_g >= -2
-                    && diff_g < 2
-                    && diff_b >= -2
-                    && diff_b < 2)
-            {
-                // if alpha is unchanged, and diff can fit in a mini diff token:
-                let packed_diff =
-                    ((diff_r + 2) as u8) << 4 | ((diff_g + 2) as u8) << 2 | ((diff_b + 2) as u8);
-                buffer.push(TOKEN_DIFF_RGB | packed_diff);
-            } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
-                && (diff_g >= -32
-                    && diff_g < 32
-                    && (diff_r - diff_g) >= -8
-                    && (diff_r - diff_g) < 8
-                    && (diff_b - diff_g) >= -8
-                    && (diff_b - diff_g) < 8)
-            {
-                buffer.push(TOKEN_DIFF_LUMA | (((diff_g + 32) & 0b00111111) as u8));
-                buffer.push((((diff_r - diff_g) + 8) as u8) << 4 | (((diff_b - diff_g) + 8) as u8));
+
+            if r == last_r && g == last_g && b == last_b && a == last_a {
+                run_length += 1;
+
+                // write out the run length if we're on a run, then continue with the new pixel
+                if run_length == 62 || (x == w - 1 && y == h - 1) {
+                    buffer.push((run_length - 1) | TOKEN_RUN);
+                    run_length = 0;
+                }
             } else {
-                // else diff is too big for either diff chunk. send a full rgb with unchanged alpha
-                buffer.push(TOKEN_RGB);
-                buffer.push(r);
-                buffer.push(g);
-                buffer.push(b);
+                // else, we have a new pixel
+                // maybe it's in the lookback array
+                if lookback_arr[lookback_hash] == color_u32 {
+                    buffer.push(lookback_hash as u8 | TOKEN_LOOKBACK);
+                } else if a != last_a {
+                    // if the alpha changed we send an entire rgba no matter what
+                    buffer.push(TOKEN_RGBA);
+                    buffer.push(r);
+                    buffer.push(g);
+                    buffer.push(b);
+                    buffer.push(a);
+                } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
+                    && (diff_r >= -2
+                        && diff_r < 2
+                        && diff_g >= -2
+                        && diff_g < 2
+                        && diff_b >= -2
+                        && diff_b < 2)
+                {
+                    // if alpha is unchanged, and diff can fit in a mini diff token:
+                    let packed_diff = ((diff_r + 2) as u8) << 4
+                        | ((diff_g + 2) as u8) << 2
+                        | ((diff_b + 2) as u8);
+                    buffer.push(TOKEN_DIFF_RGB | packed_diff);
+                } else if (diff_r != 0 || diff_g != 0 || diff_b != 0)
+                    && (diff_g >= -32
+                        && diff_g < 32
+                        && (diff_r - diff_g) >= -8
+                        && (diff_r - diff_g) < 8
+                        && (diff_b - diff_g) >= -8
+                        && (diff_b - diff_g) < 8)
+                {
+                    buffer.push(TOKEN_DIFF_LUMA | (((diff_g + 32) & 0b00111111) as u8));
+                    buffer.push(
+                        (((diff_r - diff_g) + 8) as u8) << 4 | (((diff_b - diff_g) + 8) as u8),
+                    );
+                } else {
+                    // else diff is too big for either diff chunk. send a full rgb with unchanged alpha
+                    buffer.push(TOKEN_RGB);
+                    buffer.push(r);
+                    buffer.push(g);
+                    buffer.push(b);
+                }
             }
 
             // and cache it in the lookback array
@@ -182,11 +176,7 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
         }
     }
 
-    if run_length > 0 {
-        buffer.push((run_length - 1) | TOKEN_RUN);
-    }
-
-    buffer.write(&TOKEN_END.to_le_bytes()).unwrap();
+    buffer.write(&TOKEN_END.to_be_bytes()).unwrap();
 
     buffer
 }
@@ -228,7 +218,7 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
         }
     };
 
-    while buff_idx < buf.len() {
+    while buff_idx < buf.len() - 4 {
         let token = buf[buff_idx];
         buff_idx += 1;
 
@@ -309,6 +299,8 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
         draw(pixel_idx, r, g, b, a);
         pixel_idx += 1;
     }
+
+    // TODO expect end token
 
     img
 }
