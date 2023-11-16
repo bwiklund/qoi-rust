@@ -2,4 +2,5 @@
 atlas.png
 /tests/*.decoded.png
 /tests/*.gz
-/tests/*.bip
+/tests/*.qoi
+.DS_Store

@@ -3,9 +3,9 @@ use std::{fs::File, io::Write};
 use image::{DynamicImage, GenericImage, GenericImageView};
 
 fn main() {
-    println!("BIP");
+    println!("QOI");
 
-    run_on_image("tests/atlas.png");
+    // run_on_image("tests/atlas.png");
     run_on_image("tests/selene_neutral_0.png");
     run_on_image("tests/pinch_atlas32.png");
     run_on_image("tests/spotify.png");
@@ -28,17 +28,17 @@ fn run_on_image(path: &str) {
         100.0 * size as f32 / raw_size_bytes as f32
     );
 
-    let bip = encode(&img);
+    let qoi = encode(&img);
     println!(
-        "{} as bip -> {} bytes ({}%)",
+        "{} as qoi -> {} bytes ({}%)",
         path,
-        bip.len(),
-        100.0 * bip.len() as f32 / raw_size_bytes as f32
+        qoi.len(),
+        100.0 * qoi.len() as f32 / raw_size_bytes as f32
     );
-    let mut file = File::create(path.to_owned() + ".bip").unwrap();
-    file.write(&bip).unwrap();
+    let mut file = File::create(path.to_owned() + ".qoi").unwrap();
+    file.write(&qoi).unwrap();
 
-    let decoded = decode(&bip);
+    let decoded = decode(&qoi);
     decoded.save(path.to_owned() + ".decoded.png").unwrap();
 
     check(&img, &decoded);
@@ -66,6 +66,7 @@ const TOKEN_DIFF_RGB: u8 = 0b01000000;
 const TOKEN_DIFF_LUMA: u8 = 0b10000000;
 const TOKEN_RUN: u8 = 0b11000000;
 const MASK: u8 = 0b00111111;
+const TOKEN_END: u32 = 0x00000001;
 
 fn color_hash(r: u8, g: u8, b: u8, a: u8) -> usize {
     ((r as u32 * 3 + g as u32 * 5 + b as u32 * 7 + a as u32 * 11) % 64) as usize
@@ -74,14 +75,19 @@ fn color_hash(r: u8, g: u8, b: u8, a: u8) -> usize {
 fn encode(img: &DynamicImage) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
 
+    buffer.extend_from_slice("qoif".as_bytes());
+
     // push a u16 to u8 buffer as two bytes
-    buffer.extend_from_slice(&(img.width() as u16).to_le_bytes());
-    buffer.extend_from_slice(&(img.height() as u16).to_le_bytes());
+    buffer.extend_from_slice(&(img.width() as u32).to_be_bytes());
+    buffer.extend_from_slice(&(img.height() as u32).to_be_bytes());
+
+    buffer.push(4); // rgba channels
+    buffer.push(0); // srgb space, default
 
     let mut last_r: u8 = 0;
     let mut last_g: u8 = 0;
     let mut last_b: u8 = 0;
-    let mut last_a: u8 = 0;
+    let mut last_a: u8 = 255;
 
     let mut run_length: u8 = 0;
 
@@ -102,7 +108,7 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
 
             let is_same = r == last_r && g == last_g && b == last_b && a == last_a;
 
-            if is_same && run_length < 61 {
+            if is_same && run_length < 62 {
                 // 64 - 2 = 62 is the max, otherwise would be ambiguous with TOKEN_RGB(A)
                 run_length += 1;
                 continue;
@@ -112,7 +118,7 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
 
             // write out the run length if we're on a run, then continue with the new pixel
             if run_length > 0 {
-                buffer.push(run_length | TOKEN_RUN);
+                buffer.push((run_length - 1) | TOKEN_RUN);
                 run_length = 0;
 
                 if is_same {
@@ -176,6 +182,12 @@ fn encode(img: &DynamicImage) -> Vec<u8> {
         }
     }
 
+    if run_length > 0 {
+        buffer.push((run_length - 1) | TOKEN_RUN);
+    }
+
+    buffer.write(&TOKEN_END.to_le_bytes()).unwrap();
+
     buffer
 }
 
@@ -184,21 +196,28 @@ fn pack_rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
 }
 
 pub fn decode(buf: &Vec<u8>) -> DynamicImage {
-    // for each byte,
-    let w = u16::from_le_bytes([buf[0], buf[1]]) as u32;
-    let h = u16::from_le_bytes([buf[2], buf[3]]) as u32;
+    let magic_number = &buf[0..4];
+    if magic_number != "qoif".as_bytes() {
+        panic!("invalid magic number");
+    }
+
+    let w = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let h = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    let _channels = buf[12];
+    let _color_space = buf[13];
+
     let mut img = DynamicImage::new_rgba8(w, h);
 
     let mut r = 0;
     let mut g = 0;
     let mut b = 0;
-    let mut a = 0;
+    let mut a = 255;
 
     let mut lookback_arr = [0u32; 64];
 
-    // for each byte starting at 2
+    // for each byte starting after header
     let mut pixel_idx = 0;
-    let mut buff_idx = 4;
+    let mut buff_idx = 14;
 
     // helper fn to draw if in bounds
     let mut draw = |pix: u32, r: u8, g: u8, b: u8, a: u8| {
@@ -232,7 +251,7 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
             draw(pixel_idx, r, g, b, a);
             pixel_idx += 1;
         } else if token & !MASK == TOKEN_RUN {
-            let run_length = token & MASK;
+            let run_length = (token & MASK) + 1;
             for _ in 0..run_length {
                 draw(pixel_idx, r, g, b, a);
                 pixel_idx += 1;
