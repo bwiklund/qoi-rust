@@ -269,8 +269,6 @@ pub fn decode(buf: &Vec<u8>) -> DynamicImage {
 
             let diff_r = ((diff_p2 >> 4) & 0b00001111) as i16 - 8;
             let diff_b = (diff_p2 & 0b00001111) as i16 - 8;
-            // println!("{:b} {:b}", diff_p1, diff_p2);
-            // println!("diff_r: {}, diff_g: {}, diff_b: {}", diff_r, diff_g, diff_b);
 
             r = (r as i16 + diff_r + diff_g) as u8;
             g = (g as i16 + diff_g) as u8;
